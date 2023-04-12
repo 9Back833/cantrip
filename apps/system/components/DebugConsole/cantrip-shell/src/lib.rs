@@ -218,28 +218,6 @@ pub fn repl_eof<T: io::BufRead>(output: &mut dyn io::Write, input: &mut T, built
         // NB: LineReader echo's input
     let _ = write!(output, "CANTRIP> ");
     eval("test_obj_alloc", &cmds, output, input, builtin_cpio);
-    /*
-    eval("builtins", &cmds, output, input, builtin_cpio);
-    info!("************************************************");
-    eval("mstats", &cmds, output, input, builtin_cpio);
-    info!("************************************************");
-    eval("install hello.app", &cmds, output, input, builtin_cpio);
-    info!("************************************************");
-    eval("start hello", &cmds, output, input, builtin_cpio);
-    info!("************************************************");
-    eval("mstats", &cmds, output, input, builtin_cpio);
-    info!("************************************************");
-    eval("stop hello", &cmds, output, input, builtin_cpio);
-    */
-        /*
-        if let Ok(cmdline) = line_reader.read_line(output, input) {
-            eval(cmdline, &cmds, output, input, builtin_cpio);
-            info!("ok");
-        } else {
-            let _ = writeln!(output, "EOF");
-            break;
-        }*/
-    //}
 }
 
 /// Implements a command that pauses for a specified period of time.
