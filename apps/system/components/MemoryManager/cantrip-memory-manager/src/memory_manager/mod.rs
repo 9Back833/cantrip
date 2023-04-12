@@ -293,17 +293,6 @@ impl MemoryManagerInterface for MemoryManager {
                     } else {
                         self.requested_objs += num;
                     };
-                    /*
-                    let frame = ObjDescBundle::new(
-                        18,
-                        seL4_WordBits as u8,
-                        vec![ObjDesc::new(
-                            seL4_SmallPageObject,
-                            1024,
-                            self.frame_base_slot + num,
-                        )]
-                    );
-                    */
                     for i in 0..num {
                         if let Err(e) = MemoryManager::retype_frame(
                             self.frame_base_slot + i,
@@ -324,17 +313,6 @@ impl MemoryManagerInterface for MemoryManager {
                     self.recv_frame_base_slot += num * 1024;
                 } else {
                     let num = self.untypeds[ut_index+1].free_bytes / MIN_MEMORY_SIZE;
-                    /*
-                    let mut frame = ObjDescBundle::new(
-                        18,
-                        seL4_WordBits as u8,
-                        vec![ObjDesc::new(
-                            seL4_SmallPageObject,
-                            1024,
-                            self.frame_base_slot,
-                        )]
-                    );
-                    */
                     if num > 0 {
                     if let Err(e) = MemoryManager::retype_frame(
                         self.untypeds[ut_index+1].cptr,
@@ -456,46 +434,3 @@ impl MemoryManagerInterface for MemoryManager {
     }
 }
 
-/*
-pub trait CalculateOf2 {
-    fn multiple_of_2(self) -> bool;
-    fn next_power_of_2(self) -> usize;
-    fn log2_2(self) -> u8;
-}
-
-impl CalculateOf2 for usize {
-    fn multiple_of_2(self) -> bool {
-        self !=0 && (self & (self - 1)) == 0
-    }
-    //Find a power of 2 greater than the input
-    fn next_power_of_2(self) -> usize {
-        if self == 0 {
-            return 1;
-        }
-        let mut v = Wrapping(self);
-        v -= Wrapping(1);
-        v = v | (v >> 1);
-        v = v | (v >> 2);
-        v = v | (v >> 4);
-        v = v | (v >> 8);
-        v = v | (v >> 16);
-        if size_of::<usize>() > 4 {
-            v = v | (v >> 32);
-        }
-        v += Wrapping(1);
-        let result = match v { Wrapping(v) => v };
-        assert!(result.multiple_of_2());
-        assert!(result >= self && self > result >> 1);
-        result
-    }
-    fn log2_2(self) -> u8 {
-        let mut temp = self;
-        let mut result = 0;
-        temp >>= 1;
-        while temp != 0 {
-            result += 1;
-            temp >>= 1;
-        }
-        result
-    }
-}*/

@@ -1249,8 +1249,6 @@ impl TreeVec {
             let frame_bundle = mem.bulk;
             //info!("free_bundle:{:?}",frame_bundle);
             self.new_cantrip_frame_free(frame_bundle);
-            //let cptr = frame.cptr;
-            //&frame_bundle.move_frame_to_framecnode(MEMORY_RECV_CNODE, MEMORY_RECV_CNODE_DEPTH,cptr);
         }
     }
 
@@ -1292,28 +1290,7 @@ impl MemBlock {
             bulk: bulk,
         }
     }
-    // pub fn new_empty() -> Self {
-    //     Self {frame_num: 0, free_time: 0, bulk: FrameBulk {
-    //         frame_bundle: ObjDescBundle {cnode: 0, depth: 0, objs: Vec::new()}, 
-    //         cptr: 0, tree_node: 0, alloc_node: (0, 0)}}
-    // }
-    // pub fn get_bulk(&self) -> FrameBulk {
-    //     self.bulk
-    // }
-    // pub fn clone(self) -> MemBlock {
-    //     let mut new_block = MemBlock { frame_num: self.frame_num, free_time: self.free_time, bulk: FrameBulk {
-    //          frame_bundle: ObjDescBundle { 
-    //             cnode: self.bulk.frame_bundle.cnode, depth: self.bulk.frame_bundle.depth, objs: Vec::new()
-    //          }, 
-    //          cptr: self.bulk.cptr, 
-    //          tree_node: self.bulk.tree_node, 
-    //          alloc_node: self.bulk.alloc_node
-    //         }};
-    //     for i in 0..self.bulk.frame_bundle.objs.len() {
-    //         new_block.bulk.frame_bundle.objs.push(self.bulk.frame_bundle.objs[i]);
-    //     }
-    //     new_block
-    // }
+
 }
 
 const MAX_FRAME_NUM:usize = 1024;

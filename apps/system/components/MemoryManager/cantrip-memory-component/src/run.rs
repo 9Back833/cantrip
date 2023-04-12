@@ -67,18 +67,6 @@ pub unsafe extern "C" fn pre_init() {
         },
         /*untypeds=*/ bootinfo.untyped_descs(),
     );
-    /*
-    if let Ok(stats) = CANTRIP_MEMORY.stats() {
-        info!(
-            "Global memory: {} allocated {} free, reserved: {} kernel {} user;current_memory_size{}",
-            stats.allocated_bytes,
-            stats.free_bytes,
-            bootinfo.kernelReservedBytes,
-            stats.overhead_bytes,
-            stats.current_memory_size,
-        );
-    }
-    */
     //info!("{},{}",bootinfo.empty,start,bootinfo.empty.end);
     CAMKES.init_slot_allocator(bootinfo.empty.start, bootinfo.empty.end);
 
