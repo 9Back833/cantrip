@@ -19,6 +19,7 @@
 
 use allocator;
 use log::trace;
+use log::info;
 use logger::CantripLogger;
 use sel4_sys;
 use slot_allocator::CANTRIP_CSPACE_SLOTS;
@@ -97,10 +98,11 @@ impl Camkes {
         unsafe {
             CANTRIP_CSPACE_SLOTS.init(self.name, first_slot, last_slot - first_slot);
             trace!(
-                "{} setup cspace slots: first slot {} free {}",
+                "{} setup cspace slots: first slot {},free slot num {},use slot num {}",
                 self.name,
                 CANTRIP_CSPACE_SLOTS.base_slot(),
-                CANTRIP_CSPACE_SLOTS.free_slots()
+                CANTRIP_CSPACE_SLOTS.free_slots(),
+                CANTRIP_CSPACE_SLOTS.used_slots()
             );
         }
     }

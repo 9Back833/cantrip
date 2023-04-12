@@ -20,10 +20,16 @@ import <ProcessManager/ProcessManager.camkes>;
 import <MemoryManager/MemoryManager.camkes>;
 import <SecurityCoordinator/SecurityCoordinator.camkes>;
 import <SDKRuntime/SDKRuntime.camkes>;
+import <TimerServiceli/TimerServiceli.camkes>;
 
 component BuiltinCpioArchive {
     hardware;
     dataport Buf(0x1000000) cpio;
+}
+
+component Timerbase {
+    hardware;
+    dataport Buf reg;
 }
 
 assembly {
@@ -34,8 +40,13 @@ assembly {
         component ProcessManager process_manager;
         component DebugConsole debug_console;
         component SecurityCoordinator security_coordinator;
+        component Timerbase timerbase;
+        component TimerServiceli timer_lilinhan;
 
         component SDKRuntime sdk_runtime;
+
+        connection seL4HardwareMMIO timer_lilinhan_reg(from timer_lilinhan.reg,
+                                            to timerbase.reg);
 
         // Built-in CPIO archive is visible only to DebugConsole.
         connection seL4HardwareMMIO cpio_archive(from debug_console.cpio_archive,
@@ -44,6 +55,9 @@ assembly {
         // Hookup ProcessManager to DebugConsole for shell commands.
         connection seL4RPCCall shell_process(from debug_console.proc_ctrl,
                                              to process_manager.proc_ctrl);
+
+        connection seL4RPCCall shell_timer(from debug_console.timerli,
+                                             to timer_lilinhan.timerli);
 
         // ProcessMaanager talks to the SDKManager (the privileged part of
         // the SDKRuntime) to plumb a badged connection between applications
@@ -92,6 +106,9 @@ assembly {
     configuration {
         cpio.cpio_paddr = 0x20000000; // 512M
         cpio.cpio_size = 0x1000000;
+
+        timerbase.reg_paddr = 0x3F003000;
+        timerbase.reg_size = 0x1000;
 
         // TODO(sleffler): temp stack bumps until code is fixed
         memory_manager._stack_size = 32*1024; // 2x stack for pre_init work

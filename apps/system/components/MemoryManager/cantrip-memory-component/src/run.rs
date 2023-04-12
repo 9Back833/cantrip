@@ -29,6 +29,7 @@ use core::ops::Range;
 use core::slice;
 use log::info;
 
+
 use sel4_sys::seL4_BootInfo;
 use sel4_sys::seL4_CNode_Delete;
 use sel4_sys::seL4_CPtr;
@@ -66,16 +67,19 @@ pub unsafe extern "C" fn pre_init() {
         },
         /*untypeds=*/ bootinfo.untyped_descs(),
     );
+    /*
     if let Ok(stats) = CANTRIP_MEMORY.stats() {
         info!(
-            "Global memory: {} allocated {} free, reserved: {} kernel {} user",
+            "Global memory: {} allocated {} free, reserved: {} kernel {} user;current_memory_size{}",
             stats.allocated_bytes,
             stats.free_bytes,
             bootinfo.kernelReservedBytes,
             stats.overhead_bytes,
+            stats.current_memory_size,
         );
     }
-
+    */
+    //info!("{},{}",bootinfo.empty,start,bootinfo.empty.end);
     CAMKES.init_slot_allocator(bootinfo.empty.start, bootinfo.empty.end);
 
     // Delete the CAmkES-setup CNode; we're going to reuse the
@@ -104,6 +108,7 @@ pub unsafe extern "C" fn memory_alloc(
     c_raw_data: *const u8,
 ) -> MemoryManagerError {
     let recv_path = CAMKES.get_current_recv_path();
+    //info!("path:{:?}",recv_path);
     // NB: make sure noone clobbers the setup done in memory__init
     CAMKES.assert_recv_path();
 
@@ -155,6 +160,7 @@ pub unsafe extern "C" fn memory_stats(
     c_raw_resp_data: *mut RawMemoryStatsData,
 ) -> MemoryManagerError {
     let recv_path = CAMKES.get_current_recv_path();
+    //info!("path:{:?}",recv_path);
     // NB: make sure noone clobbers the setup done in memory__init
     CAMKES.assert_recv_path();
 

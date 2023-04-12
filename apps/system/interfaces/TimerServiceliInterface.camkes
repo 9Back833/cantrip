@@ -1,0 +1,4 @@
+procedure timer_inf {
+    u_int32_t readtime();
+};
+

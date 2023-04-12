@@ -42,7 +42,8 @@ path = "mod.rs"
 
 [dependencies]
 capdl = { path = "../capdl" }
-cpio = { git = "https://github.com/rcore-os/cpio" }
+#cpio = { git = "https://github.com/rcore-os/cpio" }
+cpio = { path = "/home/me/cpio"}
 cstr_core = "0.2.3"
 log = { version = "0.4", features = ["release_max_level_info"] }
 sel4-sys = { path = "../sel4-sys", default-features = false, features = ["arch_generic"] }

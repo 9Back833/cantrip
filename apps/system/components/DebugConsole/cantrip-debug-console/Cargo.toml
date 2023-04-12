@@ -37,7 +37,9 @@ LOG_DEBUG = []
 LOG_TRACE = []
 
 [dependencies]
-cpio = { git = "https://github.com/rcore-os/cpio" }
+# cpio = { git = "https://github.com/rcore-os/cpio" }
+cpio = {path = "/home/me/cpio"}
+
 # Disable default so we don't pull in CString which requires an allocator
 cstr_core = { version = "0.2.3", default-features = false }
 cty = "0.2.1"
