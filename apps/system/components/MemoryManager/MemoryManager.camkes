@@ -32,4 +32,6 @@ component MemoryManager {
   // capabilitiies the component's cnode is up-sized to be large enough
   // to hold the extra capabilties.
   attribute int untyped_memory = true;
+
+  attribute int cnode_headroom = 8192;
 }

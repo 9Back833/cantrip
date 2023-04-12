@@ -1,6 +1,8 @@
 //! Cantrip OS global memory management support
 
 extern crate alloc;
+use alloc::vec::Vec;
+use alloc::vec;
 use cantrip_memory_interface::MemoryError;
 use cantrip_memory_interface::MemoryManagerInterface;
 use cantrip_memory_interface::MemoryManagerStats;
@@ -9,11 +11,13 @@ use cantrip_memory_interface::ObjDescBundle;
 use cantrip_os_common::camkes::{seL4_CPath, Camkes};
 use cantrip_os_common::sel4_sys;
 use core::ops::Range;
+
 use log::{debug, error, info, trace, warn};
 use smallvec::SmallVec;
 
 use sel4_sys::seL4_CNode_Delete;
 use sel4_sys::seL4_CNode_Revoke;
+//use sel4_sys::seL4_CNode_Move;
 use sel4_sys::seL4_CPtr;
 use sel4_sys::seL4_Error;
 use sel4_sys::seL4_Result;
@@ -21,6 +25,14 @@ use sel4_sys::seL4_UntypedDesc;
 use sel4_sys::seL4_Untyped_Describe;
 use sel4_sys::seL4_Untyped_Retype;
 use sel4_sys::seL4_Word;
+use sel4_sys::seL4_SmallPageObject;
+use sel4_sys::seL4_WordBits;
+use sel4_sys::seL4_ObjectType::*;
+
+
+// new code
+const MIN_MEMORY_SIZE: usize = 4 * 1024;
+const MAX_MEMORY_SIZE: usize = 4 * 1024 * 1024;
 
 fn delete_path(path: &seL4_CPath) -> seL4_Result {
     unsafe { seL4_CNode_Delete(path.0, path.1, path.2 as u8) }
@@ -56,6 +68,7 @@ struct UntypedSlab {
     pub _last_paddr: seL4_Word, // Physical address of slab end
     pub cptr: seL4_CPtr,        // seL4 untyped object
 }
+
 impl UntypedSlab {
     fn new(ut: &seL4_UntypedDesc, free_bytes: usize, cptr: seL4_CPtr) -> Self {
         UntypedSlab {
@@ -87,6 +100,10 @@ pub struct MemoryManager {
     // Alloc requests failed due to lack of untyped memory (NB: may be
     // due to fragmentation of untyped slabs).
     out_of_memory: usize,
+    current_memory_size: usize,
+    frame_base_slot: usize,
+    recv_frame_base_slot: usize,
+
 }
 
 fn _howmany(value: usize, unit: usize) -> usize { value + (unit - 1) / unit }
@@ -117,6 +134,10 @@ impl MemoryManager {
 
             untyped_slab_too_small: 0,
             out_of_memory: 0,
+            current_memory_size: 0,
+            frame_base_slot: 91,
+            recv_frame_base_slot:100,
+
         };
         for (ut_index, ut) in untypeds.iter().enumerate() {
             #[cfg(feature = "CONFIG_NOISY_UNTYPEDS")]
@@ -146,6 +167,7 @@ impl MemoryManager {
         // Sort non-device slabs by descending amount of free space.
         m.untypeds
             .sort_unstable_by(|a, b| b.free_bytes.cmp(&a.free_bytes));
+        //info!("{:?}",m.untypeds);
         m
     }
 
@@ -168,10 +190,18 @@ impl MemoryManager {
     pub fn untyped_slab_too_small(&self) -> usize { self.untyped_slab_too_small }
     pub fn out_of_memory(&self) -> usize { self.out_of_memory }
 
-    fn retype_untyped(free_untyped: seL4_CPtr, root: seL4_CPtr, obj: &ObjDesc) -> seL4_Result {
+    // return current memory_size
+    pub fn current_memory_size(&self) -> usize { self.current_memory_size }
+
+    // return current frame_base_slot
+    pub fn frame_base_slot(&self) -> usize { self.frame_base_slot }
+
+    pub fn recv_frame_base_slot(&self) -> usize { self.recv_frame_base_slot }
+
+    pub fn retype_untyped(free_untyped: seL4_CPtr, root: seL4_CPtr, obj: &ObjDesc) -> seL4_Result {
         unsafe {
             seL4_Untyped_Retype(
-                free_untyped,
+                free_untyped,  // Point to a specific untyped object
                 /*type=*/ obj.type_.into(),
                 /*size_bits=*/ obj.retype_size_bits().unwrap(),
                 /*root=*/ root,
@@ -179,6 +209,36 @@ impl MemoryManager {
                 /*node_depth=*/ 0, // NB: store in cnode
                 /*node_offset=*/ obj.cptr,
                 /*num_objects=*/ obj.retype_count(),
+            )
+        }
+    }
+
+    pub fn retype_frame(free_untyped: seL4_CPtr, root: seL4_CPtr, obj: &ObjDesc, offset: usize,num:usize) -> seL4_Result {
+        unsafe {
+            seL4_Untyped_Retype(
+                free_untyped,  // Point to a specific untyped object
+                /*type=*/ obj.type_.into(),
+                /*size_bits=*/ obj.retype_size_bits().unwrap(),
+                /*root=*/ root,
+                /*node_index=*/ 0, // Ignored 'cuz depth is zero
+                /*node_depth=*/ 0, // NB: store in cnode
+                /*node_offset=*/ offset,
+                /*num_objects=*/ num,
+            )
+        }
+    }
+
+    fn retype_fix_untyped(free_untyped: seL4_CPtr, obj: &ObjDesc, size_bits: usize, num: usize, offset: usize) -> seL4_Result {
+        unsafe {
+            seL4_Untyped_Retype(
+                free_untyped,  // Point to a specific untyped object
+                /*type=*/ obj.type_.into(),
+                /*size_bits=*/ size_bits,
+                /*root=*/ 18,
+                /*node_index=*/ 0, // Ignored 'cuz depth is zero
+                /*node_depth=*/ 0, // NB: store in cnode
+                /*node_offset=*/ obj.cptr + offset,
+                /*num_objects=*/ num,
             )
         }
     }
@@ -194,11 +254,11 @@ impl MemoryManager {
     }
 }
 
+
 impl MemoryManagerInterface for MemoryManager {
     fn alloc(&mut self, bundle: &ObjDescBundle) -> Result<(), MemoryError> {
         trace!("alloc {:?}", bundle);
-
-        // TODO(sleffler): split by device vs no-device (or allow mixing)
+        //info!("cur_untyped:{}",self.cur_untyped);
         let first_ut = self.cur_untyped;
         let mut ut_index = first_ut;
 
@@ -206,41 +266,130 @@ impl MemoryManagerInterface for MemoryManager {
         let mut allocated_objs: usize = 0;
 
         for od in &bundle.objs {
-            // NB: we don't check slots are available (the kernel will tell us).
-            // TODO(sleffler): maybe check size_bytes() against untyped slab?
-            //    (we depend on the kernel for now)
-            while let Err(e) =
+            if od.type_ == seL4_SmallPageObject {
+                //info!("ut_index:{}",ut_index);
+                self.current_memory_size += self.untypeds[ut_index+1].free_bytes;
+                if self.untypeds[ut_index].free_bytes > MAX_MEMORY_SIZE {
+                    let num = self.untypeds[ut_index+1].free_bytes / MAX_MEMORY_SIZE;
+                    let ut_4m = ObjDescBundle::new(
+                        18 ,
+                        seL4_WordBits as u8,
+                        vec![ObjDesc::new(
+                            seL4_UntypedObject,
+                            22,
+                            self.frame_base_slot,
+                        )]
+                    );
+                    if let Err(e) = MemoryManager::retype_fix_untyped(
+                        self.untypeds[ut_index+1].cptr,
+                        &ut_4m.objs[0],
+                        22,
+                        num,
+                        0,
+                    )
+                    {
+                        error!("Allocation untyped failed (retype returned {:?})", e);
+                        return Err(MemoryError::UnknownMemoryError);
+                    } else {
+                        self.requested_objs += num;
+                    };
+                    /*
+                    let frame = ObjDescBundle::new(
+                        18,
+                        seL4_WordBits as u8,
+                        vec![ObjDesc::new(
+                            seL4_SmallPageObject,
+                            1024,
+                            self.frame_base_slot + num,
+                        )]
+                    );
+                    */
+                    for i in 0..num {
+                        if let Err(e) = MemoryManager::retype_frame(
+                            self.frame_base_slot + i,
+                            bundle.cnode,
+                            od,
+                            od.cptr + i*1024,
+                            od.retype_count(),
+                        )
+                        {
+                            error!("Allocation frame failed (retype returned {:?})", e);
+                            return Err(MemoryError::UnknownMemoryError);
+                        } else {
+                            self.requested_objs += 1024;
+                        };
+                    }
+                    //self.frame_base_slot += num + num * 1024;
+                    self.frame_base_slot += num;
+                    self.recv_frame_base_slot += num * 1024;
+                } else {
+                    let num = self.untypeds[ut_index+1].free_bytes / MIN_MEMORY_SIZE;
+                    /*
+                    let mut frame = ObjDescBundle::new(
+                        18,
+                        seL4_WordBits as u8,
+                        vec![ObjDesc::new(
+                            seL4_SmallPageObject,
+                            1024,
+                            self.frame_base_slot,
+                        )]
+                    );
+                    */
+                    if num > 0 {
+                    if let Err(e) = MemoryManager::retype_frame(
+                        self.untypeds[ut_index+1].cptr,
+                        bundle.cnode,
+                        od,
+                        od.cptr,
+                        num,
+                    )
+                    {
+                        error!("Allocation frame failed (retype returned {:?})", e);
+                    } else {
+                        self.requested_objs += num;
+                    };
+                    self.recv_frame_base_slot += num;
+                    }else {
+                        break;
+                    }
+                }
+                ut_index = (ut_index + 1) % self.untypeds.len();
+                self.cur_untyped = ut_index;
+            } else {
+                while let Err(e) =
                 // NB: we don't allocate ASIDPool objects but if we did it
                 //   would fail because it needs to map to an UntypedObject
-                MemoryManager::retype_untyped(
-                    self.untypeds[ut_index].cptr,
-                    bundle.cnode,
-                    od,
-                )
-            {
-                if e != seL4_Error::seL4_NotEnoughMemory {
-                    // Should not happen.
-                    // TODO(sleffler): reclaim allocations
-                    error!("Allocation request failed (retype returned {:?})", e);
-                    return Err(MemoryError::UnknownMemoryError);
+                    MemoryManager::retype_untyped(
+                        self.untypeds[ut_index].cptr,
+                        bundle.cnode,
+                        od,
+                    )
+                {
+                    if e != seL4_Error::seL4_NotEnoughMemory {
+                        // Should not happen.
+                        // TODO(sleffler): reclaim allocations
+                        error!("Allocation request failed (retype returned {:?})", e);
+                        return Err(MemoryError::UnknownMemoryError);
+                    }
+                    // This untyped does not have enough available space, try
+                    // the next slab until we exhaust all slabs. This is the best
+                    // we can do without per-slab bookkeeping.
+                    self.untyped_slab_too_small += 1;
+                    ut_index = (ut_index + 1) % self.untypeds.len();
+                    debug!("Advance to untyped slab {}", ut_index);
+                    if ut_index == first_ut {
+                        // TODO(sleffler): reclaim allocations
+                        self.out_of_memory += 1;
+                        debug!("Allocation request failed (out of space)");
+                        return Err(MemoryError::AllocFailed);
+                    }
                 }
-                // This untyped does not have enough available space, try
-                // the next slab until we exhaust all slabs. This is the best
-                // we can do without per-slab bookkeeping.
-                self.untyped_slab_too_small += 1;
-                ut_index = (ut_index + 1) % self.untypeds.len();
-                debug!("Advance to untyped slab {}", ut_index);
-                if ut_index == first_ut {
-                    // TODO(sleffler): reclaim allocations
-                    self.out_of_memory += 1;
-                    debug!("Allocation request failed (out of space)");
-                    return Err(MemoryError::AllocFailed);
-                }
-            }
             allocated_objs += od.retype_count();
             allocated_bytes += od.size_bytes().unwrap();
+            }
         }
         self.cur_untyped = ut_index;
+        self.current_memory_size = self.untypeds[self.cur_untyped].free_bytes;
 
         self.allocated_bytes += allocated_bytes;
         self.allocated_objs += allocated_objs;
@@ -251,6 +400,8 @@ impl MemoryManagerInterface for MemoryManager {
 
         Ok(())
     }
+
+
     fn free(&mut self, bundle: &ObjDescBundle) -> Result<(), MemoryError> {
         trace!("free {:?}", bundle);
 
@@ -284,6 +435,9 @@ impl MemoryManagerInterface for MemoryManager {
 
             untyped_slab_too_small: self.untyped_slab_too_small(),
             out_of_memory: self.out_of_memory(),
+            current_memory_size: self.current_memory_size(),
+            frame_base_slot: self.frame_base_slot(),
+            recv_frame_base_slot: self.recv_frame_base_slot(),
         })
     }
     fn debug(&self) -> Result<(), MemoryError> {
@@ -301,3 +455,47 @@ impl MemoryManagerInterface for MemoryManager {
         Ok(())
     }
 }
+
+/*
+pub trait CalculateOf2 {
+    fn multiple_of_2(self) -> bool;
+    fn next_power_of_2(self) -> usize;
+    fn log2_2(self) -> u8;
+}
+
+impl CalculateOf2 for usize {
+    fn multiple_of_2(self) -> bool {
+        self !=0 && (self & (self - 1)) == 0
+    }
+    //Find a power of 2 greater than the input
+    fn next_power_of_2(self) -> usize {
+        if self == 0 {
+            return 1;
+        }
+        let mut v = Wrapping(self);
+        v -= Wrapping(1);
+        v = v | (v >> 1);
+        v = v | (v >> 2);
+        v = v | (v >> 4);
+        v = v | (v >> 8);
+        v = v | (v >> 16);
+        if size_of::<usize>() > 4 {
+            v = v | (v >> 32);
+        }
+        v += Wrapping(1);
+        let result = match v { Wrapping(v) => v };
+        assert!(result.multiple_of_2());
+        assert!(result >= self && self > result >> 1);
+        result
+    }
+    fn log2_2(self) -> u8 {
+        let mut temp = self;
+        let mut result = 0;
+        temp >>= 1;
+        while temp != 0 {
+            result += 1;
+            temp >>= 1;
+        }
+        result
+    }
+}*/

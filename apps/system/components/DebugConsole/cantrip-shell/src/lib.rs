@@ -21,6 +21,7 @@ use core::fmt;
 use core::fmt::Write;
 use cpio::CpioNewcReader;
 use hashbrown::HashMap;
+use log::info;
 
 use cantrip_io as io;
 use cantrip_line_reader::LineReader;
@@ -213,16 +214,32 @@ pub fn repl<T: io::BufRead>(output: &mut dyn io::Write, input: &mut T, builtin_c
 pub fn repl_eof<T: io::BufRead>(output: &mut dyn io::Write, input: &mut T, builtin_cpio: &[u8]) {
     let cmds = get_cmds();
     let mut line_reader = LineReader::new();
-    loop {
+    //loop {
         // NB: LineReader echo's input
-        let _ = write!(output, "CANTRIP> ");
+    let _ = write!(output, "CANTRIP> ");
+    eval("test_obj_alloc", &cmds, output, input, builtin_cpio);
+    /*
+    eval("builtins", &cmds, output, input, builtin_cpio);
+    info!("************************************************");
+    eval("mstats", &cmds, output, input, builtin_cpio);
+    info!("************************************************");
+    eval("install hello.app", &cmds, output, input, builtin_cpio);
+    info!("************************************************");
+    eval("start hello", &cmds, output, input, builtin_cpio);
+    info!("************************************************");
+    eval("mstats", &cmds, output, input, builtin_cpio);
+    info!("************************************************");
+    eval("stop hello", &cmds, output, input, builtin_cpio);
+    */
+        /*
         if let Ok(cmdline) = line_reader.read_line(output, input) {
             eval(cmdline, &cmds, output, input, builtin_cpio);
+            info!("ok");
         } else {
             let _ = writeln!(output, "EOF");
             break;
-        }
-    }
+        }*/
+    //}
 }
 
 /// Implements a command that pauses for a specified period of time.
@@ -236,7 +253,6 @@ fn sleep_command(
     let time_str = args.next().ok_or(CommandError::BadArgs)?;
     let time_ms = time_str.parse::<u32>()?;
 
-    use cantrip_timer_interface::*;
     match cantrip_timer_oneshot(0, time_ms) {
         Ok(_) => {
             cantrip_timer_wait().map_err(|_| CommandError::IO)?;

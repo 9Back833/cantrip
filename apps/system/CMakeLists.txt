@@ -55,6 +55,18 @@ DeclareCAmkESComponent(MemoryManager
 )
 
 RustAddLibrary(
+  cantrip_timerli_manager
+  SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/components/TimerServiceli
+  LIB_FILENAME libcantrip_timerli_manager.a
+)
+
+DeclareCAmkESComponent(TimerServiceli
+  LIBS cantrip_timerli_manager
+  INCLUDES interfaces
+  $ENV{OUT}/cantrip/components
+)
+
+RustAddLibrary(
   cantrip_process_manager
   SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/components/ProcessManager
   LIB_FILENAME libcantrip_process_manager.a
@@ -96,3 +108,4 @@ include(${CMAKE_CURRENT_LIST_DIR}/platforms/${KernelPlatform}/CMakeLists.txt OPT
 # Every platform has their own CAmkES assembly so services are built
 # only when the needed drivers are present (e.g. TimerService).
 DeclareCAmkESRootserver(platforms/${KernelPlatform}/system.camkes)
+

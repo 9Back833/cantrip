@@ -26,6 +26,9 @@ use cantrip_os_common::slot_allocator;
 use core::fmt;
 use log::trace;
 use serde::{Deserialize, Serialize};
+use log::info;
+use rand::RngCore;
+use rand_pcg::Pcg32;
 
 use sel4_sys::seL4_CNode_Move;
 use sel4_sys::seL4_CPtr;
@@ -39,6 +42,19 @@ use sel4_sys::seL4_SmallPageObject;
 use sel4_sys::seL4_WordBits;
 
 use slot_allocator::CANTRIP_CSPACE_SLOTS;
+
+use core::num::Wrapping;
+use core::mem::size_of;
+
+// new code
+const MIN_MEMORY_SIZE: usize = 4 * 1024;
+const MAX_MEMORY_SIZE: usize = 4 * 1024 * 1024;
+const MIDDLE_MEMORY_SIZE: usize = 128 * 1024;
+const MAX_VTREE_LEVEL: usize = 10;
+const MID_VTREE_LEVEL: usize = 5;
+
+pub static mut TIME: u32 = 0;
+
 
 // NB: @14b per desc this supports ~150 descriptors (depending
 //   on serde overhead), the rpc buffer is actually 4K so we could
@@ -55,6 +71,7 @@ extern "C" {
     // of any supplied CNode we can use that container to pass capabilities.
     static MEMORY_RECV_CNODE: seL4_CPtr;
     static MEMORY_RECV_CNODE_DEPTH: u8;
+
 }
 
 // The MemoryManager takes collections of Object Descriptors.
@@ -209,6 +226,7 @@ impl ObjDescBundle {
     // in practice they are linearized).
     // TODO(sleffler) make generic (requires supplying slot allocator)?
     pub fn move_objects_to_toplevel(&mut self) -> seL4_Result {
+        //info!("obj:{:?}",self);
         let dest_cnode = unsafe { SELF_CNODE };
         let dest_depth = seL4_WordBits as u8;
         for od in &mut self.objs {
@@ -250,6 +268,37 @@ impl ObjDescBundle {
             let count = od.retype_count();
             for offset in 0..count {
                 // XXX cleanup on error?
+                unsafe {
+                    seL4_CNode_Move(
+                        /*dest_root=*/ dest_cnode,
+                        /*dest_index=*/ dest_slot + offset,
+                        /*dest_depth=*/ dest_depth,
+                        /*src_root=*/ self.cnode,
+                        /*src_index=*/ od.cptr + offset,
+                        /*src_depth=*/ self.depth,
+                    )
+                }?;
+            }
+            unsafe { CANTRIP_CSPACE_SLOTS.free(od.cptr, count) };
+            od.cptr = dest_slot;
+            dest_slot += count;
+        }
+        self.cnode = dest_cnode;
+        self.depth = dest_depth;
+        Ok(())
+    }
+
+    //new code
+    pub fn move_frame_to_framecnode(
+        &mut self,
+        dest_cnode: seL4_CPtr,
+        dest_depth: u8,
+        dest_slot:usize,
+    ) -> seL4_Result {
+        let mut dest_slot = dest_slot; // NB: assume empty container
+        for od in &mut self.objs {
+            let count = od.retype_count();
+            for offset in 0..count {
                 unsafe {
                     seL4_CNode_Move(
                         /*dest_root=*/ dest_cnode,
@@ -329,6 +378,12 @@ pub struct MemoryManagerStats {
 
     // Alloc requests failed due to lack of untyped memory.
     pub out_of_memory: usize,
+
+    pub current_memory_size: usize,
+
+    pub frame_base_slot: usize,
+
+    pub recv_frame_base_slot: usize,
 }
 
 // Objects are potentially batched with caps to allocated objects returned
@@ -718,4 +773,658 @@ pub fn cantrip_memory_capscan() -> Result<(), MemoryManagerError> {
     }
     unsafe { memory_capscan() };
     Ok(())
+}
+
+// new code
+#[derive(Debug)]
+pub enum Error {
+    OutOfMemory,
+    NotFound,
+}
+
+#[derive(Debug)]
+pub struct Vtree {
+    pub bitmap: [usize;33],
+    pub total_mem_size: usize,
+    pub first_frame_cptr: usize,
+}
+
+impl Vtree {
+    pub fn init(total_mem_size:usize, first_frame_cptr:usize) -> Self {
+        let mut bitmap = [0usize;33];    //1 free ; 0 used
+        if total_mem_size < MIDDLE_MEMORY_SIZE {
+            let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / total_mem_size);
+            let left_index = find_node_index_region(total_mem_size).0;
+            let num = level +1;
+            let top_mask = 1 << 31;
+            bitmap[0] |= top_mask;
+            let mut sub_mask = 0;
+            for i in 0..num {
+                let temp = 1 << i;
+                for i in 0..temp {
+                    sub_mask |= 1 << (63 - (left_index * temp + i));
+                }
+            }
+            bitmap[1] |= sub_mask;
+            Self {
+                bitmap,
+                total_mem_size,
+                first_frame_cptr,
+            }
+        } else {
+            let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / total_mem_size);
+            if total_mem_size == MIDDLE_MEMORY_SIZE {
+                bitmap[0] = 1 << 31;
+                bitmap[1] = (1 << 63) - 1;
+            } else {
+                let left_index = find_node_index_region(total_mem_size).0;
+                let top_num = level - 4;
+                let sub_num = total_mem_size / MIDDLE_MEMORY_SIZE;
+                let mut top_mask = 0;
+                //let mut sub_mask = 0;
+                for i in 0..top_num {
+                    let temp = 1 <<(i);
+                    for i in 0..temp {
+                        top_mask |= 1 << (63 - (left_index * temp + i));
+                    }
+                }
+                bitmap[0] |= top_mask;
+                for i in 1..= sub_num {
+                    bitmap[i] |= (1<<63)-1;
+                }
+            }
+            Self {
+                bitmap,
+                total_mem_size,
+                first_frame_cptr,
+            }
+        }
+    }
+
+    pub fn find_alloc_node(&self, mem_size:usize) -> Result<(usize, usize), Error> {
+        if mem_size > MIDDLE_MEMORY_SIZE {  // >128k
+            let region = find_node_index_region(mem_size);
+            let left_index = region.0;
+            let right_index = region.1;
+            //info!("{}",right_index);
+            let mask = (1 << (64 - left_index)) -1;
+            let temp = self.bitmap[0] & mask;
+            let top_index = temp.leading_zeros() as usize;
+            //info!("{}",top_index);
+            if top_index > right_index {
+                return Err(Error::NotFound);
+            } else {
+                return Ok((top_index, 0));
+            }
+        } else {
+            let top_left_index = 32;
+            let top_mask = (1 << (64 - top_left_index)) -1;
+            let top_temp = self.bitmap[0] & top_mask;
+            let top_temp_index = top_temp.leading_zeros() as usize;
+            let sub_tree_num = 32 - (63 - top_temp_index);
+            //info!("{}",sub_tree_num);
+            //
+            let sub_region = find_node_index_region(mem_size);
+            let sub_left_index = sub_region.0;
+            let sub_right_index = sub_region.1;
+            //info!("{}",sub_right_index);
+            let sub_mask = (1 << (64 - sub_left_index)) -1;
+            for i in sub_tree_num..33 {
+                let sub_temp = self.bitmap[i] & sub_mask;
+                let sub_index = sub_temp.leading_zeros() as usize;
+                //info!("{}",sub_index);
+                if sub_index > sub_right_index {
+                    continue;
+                } else {
+                    return Ok((31+i,sub_index));
+                }
+            }
+        }
+        return Err(Error::NotFound);
+    }
+    pub fn chang_flag_one(&mut self,mem_size: usize) {
+        let node_index = self.find_alloc_node(mem_size).unwrap();
+        let top = node_index.0;
+        let sub = node_index.1;
+        if (0<top) && (top<32) && (sub == 0) {
+            // top-level
+            let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / mem_size);
+            let top_child_num = level - 4;
+            let mut top_child_mask = 0;
+            let mut top_parents_mask = 0;
+            for i in 0..top_child_num {
+                let temp = 1 << i;
+                for i in 0..temp {
+                    let sub_num = 63 - (top * temp + i);
+                    if sub_num <= 31 {
+                        let sub_index = 32 - sub_num;
+                        self.bitmap[sub_index] = 0;
+                    }
+                    top_child_mask |= 1 << sub_num;
+                }
+            }
+            self.bitmap[0] ^= top_child_mask;
+            let top_parents_num = MAX_VTREE_LEVEL - level;
+            for i in 0..top_parents_num {
+                let parents = top >> (i+1);
+                let temp = 1 << (63 - parents);
+                if (self.bitmap[0] & temp) > 0 {
+                    top_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[0] ^= top_parents_mask;
+        }
+        if (top>31) && (top<64) && (sub>1) && (sub<64) {
+            let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / mem_size);
+            let sub_tree_index = 32 - (63 - top);
+            let sub_child_num = level + 1;
+            let mut sub_child_mask = 0;
+            let mut sub_parents_mask = 0;
+            for i in 0..sub_child_num {
+                let temp = 1 << i;
+                for i in 0..temp {
+                    sub_child_mask |= 1 << (63 - (sub * temp + i))
+                }
+            }
+            self.bitmap[sub_tree_index] ^= sub_child_mask;
+            let sub_parents_num = MID_VTREE_LEVEL - level;
+            for i in 0..sub_parents_num {
+                let parents = sub >> (i+1);
+                let temp = 1 << (63 - parents);
+                if (self.bitmap[sub_tree_index] & temp) > 0 {
+                    sub_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[sub_tree_index] ^= sub_parents_mask;
+            let mut top_parents_mask = 0;
+            let top_parents_num = 5;
+            if self.bitmap[sub_tree_index] == 0 {
+                let temp_mask = 1 << (63 - top);
+                self.bitmap[0] ^= temp_mask;
+            }
+            for i in 0..top_parents_num {
+                let parents = top >> (i+1);
+                let temp = 1 << (63 - parents);
+                if (self.bitmap[0] & temp) > 0 {
+                    top_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[0] ^= top_parents_mask;
+        }
+        if (top>31) && (top<64) && (sub == 1) {
+            let sub_tree_index = 32 - (63 - top);
+            self.bitmap[sub_tree_index] = 0;
+            let mut top_parents_mask = 0;
+            let top_parents_num = 6;
+            for i in 0..top_parents_num {
+                let parents = top >> i;
+                let temp = 1 << (63 - parents);
+                if (self.bitmap[0] & temp) > 0 {
+                    top_parents_mask |= 1 <<(63 - parents);
+                }
+            }
+            self.bitmap[0] ^= top_parents_mask;
+        }
+        self.current_vtree_max_memory_block();
+    }
+
+    pub fn chang_flag_zero(&mut self,inode:(usize,usize)) {
+        let top = inode.0;
+        let sub = inode.1;
+        if (0<top) && (top<32) && (sub == 0) {
+            let result = CalculateOf2::multiple_of_2(top);
+            let mut level = 0;
+            //let buddy = find_buddy(top);
+            if result {
+                level += MAX_VTREE_LEVEL - CalculateOf2::log2_2(top);
+            } else {
+                let next_power_of_top = CalculateOf2::next_power_of_2(top);
+                let level_temp = CalculateOf2::log2_2(next_power_of_top);
+                level += MAX_VTREE_LEVEL - level_temp + 1;
+            }
+            let top_child_num = level - 4;
+            let mut top_child_mask = 0;
+            for i in 0..top_child_num {
+                let child_temp = 1 << i;
+                for i in 0..child_temp {
+                    let sub_num = 63 - (top * child_temp + i);
+                    if sub_num <= 31 {
+                        let sub_index = 32 - sub_num;
+                        self.bitmap[sub_index] = (1 << 63) -1;
+                    }
+                    top_child_mask |= 1 << sub_num;
+                }
+            }
+            self.bitmap[0] |= top_child_mask;
+            let top_parents_num = MAX_VTREE_LEVEL - level;
+            let mut top_parents_mask = 0;
+            for i in 0..top_parents_num {
+                let parents = top >> (i+1);
+                //let temp = 1 << (63 - parents);
+                let top_buddy = find_buddy(top >> i);
+                let buddy_temp = 1 << (63 - top_buddy);
+                if (self.bitmap[0] & buddy_temp) > 0{
+                    top_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[0] |= top_parents_mask;
+        }
+        if (top>31) && (top<64) && (sub>1) && (sub<64) {
+            // compute level
+            let result = CalculateOf2::multiple_of_2(sub);
+            let sub_tree_index = 32 - (63 - top);
+            let mut level = 0;
+            //let top_buddy = find_buddy(top);
+            let sub_buddy = find_buddy(sub);
+            if result {
+                level += MID_VTREE_LEVEL - CalculateOf2::log2_2(sub);
+            } else {
+                let next_power_of_sub = CalculateOf2::next_power_of_2(sub);
+                let level_temp = CalculateOf2::log2_2(next_power_of_sub);
+                level += MID_VTREE_LEVEL + 1 - level_temp;
+            }
+            let sub_child_num = level + 1 ;
+            let mut sub_child_mask = 0;
+            for i in 0..sub_child_num {
+                let temp = 1 << i;
+                for i in 0..temp {
+                sub_child_mask |= 1 << (63 - (sub * temp + i));
+                }
+            }
+            self.bitmap[sub_tree_index] |= sub_child_mask;
+            let sub_parents_num = MID_VTREE_LEVEL - level;
+            let mut sub_parents_mask = 0;
+            for i in 0..sub_parents_num {
+                let parents = sub >> (i + 1);
+                let buddy_temp = 1 << (63 - sub_buddy);
+                if (self.bitmap[sub_tree_index] & buddy_temp) > 0 {
+                    sub_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[sub_tree_index] |= sub_parents_mask;
+            // fix
+            let mut top_parents_mask = 0;
+            let top_parents_num = 5;
+            self.bitmap[0] |= 1 << (top - 1);
+            for i in 0..top_parents_num {
+                let parents = top >> (i+1);
+                let top_buddy = find_buddy(top >> i);
+                let buddy_temp = 1 << (63 - top_buddy);
+                if (self.bitmap[0] & buddy_temp) > 0 {
+                    top_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[0] |= top_parents_mask;
+        }
+        if (top>31) && (top<64) && (sub == 1) {
+            //let top_buddy = find_buddy(top);
+            //let sub_buddy = find_buddy(sub);
+            let sub_tree_index = 32 - (63 - top);
+            self.bitmap[sub_tree_index] = (1 << 63) - 1;
+            let mut top_parents_mask = 0;
+            self.bitmap[0] |= 1 << (top - 1);
+            let top_parents_num = 5;
+            for i in 0..top_parents_num {
+                let parents = top >> (i+1);
+                let top_buddy = find_buddy(top >> i);
+                let buddy_temp = 1 << (63 - top_buddy);
+                if (self.bitmap[0] & buddy_temp) > 0 {
+                    top_parents_mask |= 1 << (63 - parents);
+                }
+            }
+            self.bitmap[0] |= top_parents_mask;
+        }
+         self.current_vtree_max_memory_block();
+    }
+
+    pub fn current_vtree_max_memory_block(&mut self) {
+        let first_top_node = self.bitmap[0].leading_zeros() as usize;
+        let mut current_max_mem = 0;
+        let mut level = 0;
+        if first_top_node < 32 {
+            let result = CalculateOf2::multiple_of_2(first_top_node);
+            if result {
+                level += MAX_VTREE_LEVEL - CalculateOf2::log2_2(first_top_node);
+            } else {
+                let next_power_of_top = CalculateOf2::next_power_of_2(first_top_node);
+                let level_temp = CalculateOf2::log2_2(next_power_of_top);
+                level += MAX_VTREE_LEVEL - level_temp + 1;
+            }
+            current_max_mem += 1 << (level + 12);
+            self.total_mem_size = current_max_mem;
+        }
+        if (first_top_node >= 32) && (first_top_node <= 63) {
+            let sub_tree_index = 32 - (63 - first_top_node);
+            let mut min_sub_node = 64;
+            for i in sub_tree_index..33 {
+                let first_sub_node = self.bitmap[i].leading_zeros() as usize;
+                if first_sub_node < min_sub_node {
+                    min_sub_node = first_sub_node;
+                }
+            }
+            let result = CalculateOf2::multiple_of_2(min_sub_node);
+             if result {
+                level += MID_VTREE_LEVEL - CalculateOf2::log2_2(min_sub_node);
+            } else {
+                let next_power_of_sub = CalculateOf2::next_power_of_2(min_sub_node);
+                let level_temp = CalculateOf2::log2_2(next_power_of_sub);
+                level += (MID_VTREE_LEVEL + 1 - level_temp);
+            }
+            current_max_mem += 1 << (level + 12);
+        }
+        if first_top_node == 64 {
+            current_max_mem = 0;
+        }
+        self.total_mem_size = current_max_mem;
+    }
+}
+
+pub fn find_node_index_region(mem_size: usize) -> (usize, usize) {
+    if mem_size > MIDDLE_MEMORY_SIZE {
+        let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / mem_size);
+        let left_index = 1 << (MAX_VTREE_LEVEL - level);
+        let right_index = (1 << (MAX_VTREE_LEVEL - level + 1)) - 1;
+        (left_index,right_index)
+    } else {
+        let level = MAX_VTREE_LEVEL - CalculateOf2::log2_2(MAX_MEMORY_SIZE / mem_size);
+        let left_index = 1 << (MID_VTREE_LEVEL - level);
+        let right_index = (1 << (MID_VTREE_LEVEL - level + 1)) - 1;
+        (left_index,right_index)
+    }
+}
+
+pub fn find_buddy(num: usize) -> usize{
+    let buddy = num;
+    if num % 2 == 0 {
+        buddy + 1
+    } else {
+        buddy -1
+    }
+}
+
+pub fn find_sub_tree_level(sub:usize) -> usize {
+    let mut level = 0;
+    if CalculateOf2::multiple_of_2(sub) {
+        level += CalculateOf2::log2_2(64/sub) - 1;
+    } else {
+        level += CalculateOf2::log2_2(64/CalculateOf2::next_power_of_2(sub));
+    }
+    level
+}
+
+pub static mut FRAME_VTREE: TreeVec = TreeVec::init();
+
+#[derive(Debug)]
+pub struct TreeVec {
+    pub treevec: Vec<Vtree>,
+}
+
+impl TreeVec {
+    pub const fn init() -> Self {
+        let treevec = Vec::<Vtree>::new();
+        TreeVec {
+            treevec,
+        }
+    }
+
+    pub fn insert_vtree(&mut self) {
+        let recv_frame_base_slot = cantrip_memory_stats().unwrap().recv_frame_base_slot;
+        //info!("recv:{}",recv_frame_base_slot);
+        let mut objs = ObjDescBundle::new(
+            unsafe { MEMORY_RECV_CNODE },
+            unsafe { MEMORY_RECV_CNODE_DEPTH },
+            vec![ObjDesc::new(
+                seL4_SmallPageObject,
+                1024,
+                /*cptr=*/ recv_frame_base_slot,
+            )],
+        );
+        cantrip_object_alloc(&objs);
+        let cur_untyped_size = cantrip_memory_stats().unwrap().current_memory_size;
+        let mut new_tree_num = 0;
+        if cur_untyped_size > MAX_MEMORY_SIZE {
+            new_tree_num += cur_untyped_size / MAX_MEMORY_SIZE;
+            for i in 0..new_tree_num {
+                let new_vtree = Vtree::init(MAX_MEMORY_SIZE,recv_frame_base_slot + i * 1024);
+                self.treevec.push(new_vtree);
+            }
+        } else {
+            let new_vtree = Vtree::init(cur_untyped_size, recv_frame_base_slot);
+            self.treevec.push(new_vtree);
+        }
+    }
+
+    pub fn find_request_vtree(&self, mem_size: usize) -> Option<usize> {
+        self.treevec.iter().position(|x| x.total_mem_size >= mem_size)
+    }
+
+    pub fn new_cantrip_frame_alloc(&mut self, num:usize) -> FrameBulk{
+        let request_mem = num * MIN_MEMORY_SIZE;
+        let mut tree_node_option = self.find_request_vtree(request_mem);
+        while tree_node_option.is_none() {
+            self.insert_vtree();
+            tree_node_option = self.find_request_vtree(request_mem);
+        }
+        let tree_node = tree_node_option.unwrap();
+        let alloc_node = self.treevec[tree_node].find_alloc_node(request_mem).unwrap();
+        let top = alloc_node.0;
+        let sub = alloc_node.1;
+        let mut frame_start_cptr = 0;
+        if (0<top) && (top<32) && (sub == 0) {
+            let level = find_sub_tree_level(top);
+            let sub_tree_node = (top << level) - 32;
+            frame_start_cptr += self.treevec[tree_node].first_frame_cptr + sub_tree_node * 32;
+        }
+        if (top>31) && (top<64) && (sub>0) && (sub<64) {
+            let sub_tree_node = 32 - (63 - top) - 1;
+            let level = find_sub_tree_level(sub);
+            let start_index = (sub << level) - 32;
+            frame_start_cptr += self.treevec[tree_node].first_frame_cptr + sub_tree_node * 32 + start_index;
+        }
+        self.treevec[tree_node].chang_flag_one(request_mem);
+        let frame_obj = vec![ObjDesc::new(seL4_SmallPageObject, num, frame_start_cptr)];
+        unsafe {
+            //let frame_obj = vec![ObjDesc::new(seL4_SmallPageObject, num, 100)];
+            let mut frame_bundle:ObjDescBundle = ObjDescBundle::new(MEMORY_RECV_CNODE, MEMORY_RECV_CNODE_DEPTH, frame_obj);
+        //info!("bundle:{:?}",frame_bundle);
+            frame_bundle.move_objects_to_toplevel();
+        //.or(Err(MemoryManagerError::MmeObjCapInvalid))?;
+            let mut frame_bulk = FrameBulk::new(frame_bundle,frame_start_cptr,tree_node,alloc_node);
+            frame_bulk
+        }
+    }
+
+    pub fn new_cantrip_frame_free(&mut self, frame: FrameBulk) {
+        self.treevec[frame.tree_node].chang_flag_zero(frame.alloc_node);
+        unsafe {
+            let mut frame_bundle = frame.frame_bundle;
+            let cptr = frame.cptr;
+            &frame_bundle.move_frame_to_framecnode(MEMORY_RECV_CNODE, MEMORY_RECV_CNODE_DEPTH,cptr);
+        }
+    }
+
+    pub fn new_cantrip_mem_free(&mut self, mem: MemBlock) {
+        // self.treevec[frame.tree_node].chang_flag_zero(frame.alloc_node);
+        unsafe {
+            let frame_bundle = mem.bulk;
+            //info!("free_bundle:{:?}",frame_bundle);
+            self.new_cantrip_frame_free(frame_bundle);
+            //let cptr = frame.cptr;
+            //&frame_bundle.move_frame_to_framecnode(MEMORY_RECV_CNODE, MEMORY_RECV_CNODE_DEPTH,cptr);
+        }
+    }
+
+}
+
+
+#[derive(Debug)]
+pub struct FrameBulk {
+    pub frame_bundle: ObjDescBundle,
+    pub cptr: usize,
+    pub tree_node: usize,
+    pub alloc_node: (usize,usize),
+}
+
+impl FrameBulk {
+    pub fn new(frame_bundle: ObjDescBundle, cptr: usize, tree_node:usize, alloc_node: (usize,usize)) -> Self {
+        FrameBulk {
+            frame_bundle,
+            cptr,
+            tree_node,
+            alloc_node
+        }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct MemBlock {
+    pub frame_num: usize,
+    pub free_time: usize,
+    pub bulk: FrameBulk,
+}
+
+impl MemBlock {
+    pub fn new(num: usize, time: usize, bulk: FrameBulk) -> Self {
+        Self {
+            frame_num: num,
+            free_time: time,
+            bulk: bulk,
+        }
+    }
+    // pub fn new_empty() -> Self {
+    //     Self {frame_num: 0, free_time: 0, bulk: FrameBulk {
+    //         frame_bundle: ObjDescBundle {cnode: 0, depth: 0, objs: Vec::new()}, 
+    //         cptr: 0, tree_node: 0, alloc_node: (0, 0)}}
+    // }
+    // pub fn get_bulk(&self) -> FrameBulk {
+    //     self.bulk
+    // }
+    // pub fn clone(self) -> MemBlock {
+    //     let mut new_block = MemBlock { frame_num: self.frame_num, free_time: self.free_time, bulk: FrameBulk {
+    //          frame_bundle: ObjDescBundle { 
+    //             cnode: self.bulk.frame_bundle.cnode, depth: self.bulk.frame_bundle.depth, objs: Vec::new()
+    //          }, 
+    //          cptr: self.bulk.cptr, 
+    //          tree_node: self.bulk.tree_node, 
+    //          alloc_node: self.bulk.alloc_node
+    //         }};
+    //     for i in 0..self.bulk.frame_bundle.objs.len() {
+    //         new_block.bulk.frame_bundle.objs.push(self.bulk.frame_bundle.objs[i]);
+    //     }
+    //     new_block
+    // }
+}
+
+const MAX_FRAME_NUM:usize = 1024;
+const NUM_OF_SIZE:usize = 19;
+
+pub fn get_time(seed: &mut Pcg32, max_time:usize) -> usize {
+    let mut time = ((seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(max_time)))) + 1;
+    while time > max_time {
+        time = ((seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(max_time)))) + 1;
+    }
+    time
+}
+
+pub fn get_first_size_distribution(seed: &mut Pcg32) -> usize {
+    let frame_num = ((seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(2))) + 1;
+    frame_num
+
+}
+
+pub fn get_second_size_distribution(seed: &mut Pcg32) -> usize {
+    let temp = ((seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(MAX_FRAME_NUM))) + 1;
+    let mut frame_num = 0;
+    match temp {
+        1..=512 => {
+            frame_num += 1;
+        },
+        513..=768 => {
+            frame_num += 2;
+        },
+        769..=896 => {
+            frame_num += 4;
+        },
+        897..=960 => {
+            frame_num += 8;
+        },
+        961..=992 => {
+            frame_num += 16;
+        },
+        993..=1008 => {
+            frame_num += 32;
+        },
+        1009..=1016 => {
+            frame_num += 64;
+        },
+        1017..=1020 => {
+            frame_num += 128;
+        },
+        1021..=1022 => {
+            frame_num += 256;
+        },
+        1023 => {
+            frame_num += 512;
+        },
+        1024 => {
+            frame_num += 1024;
+        },
+        _ => {
+            panic!("error frame num");
+    }
+}
+    frame_num
+}
+
+pub fn get_third_size_distribution(seed: &mut Pcg32, arr: [usize; 22]) -> usize {
+    let mut index = (seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(NUM_OF_SIZE)));
+    while index > (NUM_OF_SIZE - 1) {
+        index = (seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(NUM_OF_SIZE)));
+    }
+    let frame_num = arr[index];
+    frame_num
+}
+
+pub trait CalculateOf2 {
+    fn multiple_of_2(self) -> bool;
+    fn next_power_of_2(self) -> usize;
+    fn log2_2(self) -> usize;
+}
+
+impl CalculateOf2 for usize {
+    fn multiple_of_2(self) -> bool {
+        self !=0 && (self & (self - 1)) == 0
+    }
+    //Find a power of 2 greater than the input
+    fn next_power_of_2(self) -> usize {
+        if self == 0 {
+            return 1;
+        }
+        let mut v = Wrapping(self);
+        v -= Wrapping(1);
+        v = v | (v >> 1);
+        v = v | (v >> 2);
+        v = v | (v >> 4);
+        v = v | (v >> 8);
+        v = v | (v >> 16);
+        if size_of::<usize>() > 4 {
+            v = v | (v >> 32);
+        }
+        v += Wrapping(1);
+        let result = match v { Wrapping(v) => v };
+        assert!(result.multiple_of_2());
+        assert!(result >= self && self > result >> 1);
+        result
+    }
+    fn log2_2(self) -> usize {
+        let mut temp = self;
+        let mut result = 0;
+        temp >>= 1;
+        while temp != 0 {
+            result += 1;
+            temp >>= 1;
+        }
+        result
+    }
 }

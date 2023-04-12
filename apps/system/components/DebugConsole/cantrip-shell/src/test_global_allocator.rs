@@ -71,6 +71,7 @@ fn alloc_command(
     .expect("Rc 2 failed");
 
     Ok(writeln!(output, "All tests passed!")?)
+
 }
 
 /// Implements a command that tests the global allocator error handling.

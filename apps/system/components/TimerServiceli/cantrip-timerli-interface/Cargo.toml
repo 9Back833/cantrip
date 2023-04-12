@@ -13,7 +13,7 @@
 # limitations under the License.
 
 [package]
-name = "cantrip-memory-interface"
+name = "cantrip-timerli-interface"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
@@ -31,6 +31,4 @@ serde = { version = "1.0", default-features = false, features = ["alloc", "deriv
 cantrip-os-common = { path = "../../cantrip-os-common" }
 log = { version = "0.4", features = ["release_max_level_info"] }
 smallvec = "1.10"
-rand = { version = "0.8.5", default-features = false}
-rand_pcg = "0.3.1"
-cantrip-timerli-interface = { path = "../../TimerServiceli/cantrip-timerli-interface" }
+

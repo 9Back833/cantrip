@@ -20,6 +20,7 @@ import <MemoryInterface.camkes>;
 import <RustIO.idl4>;
 import <SecurityCoordinatorInterface.camkes>;
 import <TimerServiceInterface.camkes>;
+import <TimerServiceliInterface.camkes>;
 import <SDKManagerInterface.camkes>;
 
 component DebugConsole {
@@ -29,6 +30,7 @@ component DebugConsole {
 
   provides LoggerInterface logger;
   uses MemoryInterface memory;
+  uses timer_inf   timerli;
   uses PackageManagementInterface pkg_mgmt;
   uses ProcessControlInterface proc_ctrl;
   // TODO(b/200707300): for debugging
@@ -56,7 +58,7 @@ component DebugConsole {
   // Install requires enough slots to hold dynamically allocated
   // memory for package contents. Size this to handle up to 4MB
   // (at 4KB / page) though that exceeds our target memory config.
-  attribute int cnode_headroom = 1024;
+  attribute int cnode_headroom = 16384;
 
   // Copyregions for zmodem upload and for loading bundle images.
   // Could do this with one region since upload never happens
