@@ -167,6 +167,14 @@ impl MemoryManager {
         // Sort non-device slabs by descending amount of free space.
         m.untypeds
             .sort_unstable_by(|a, b| b.free_bytes.cmp(&a.free_bytes));
+       // let len = m.untypeds.len();
+        //info!("len:{}",len);
+        //let mut total_mem = 0;
+       // for i in 0..m.untypeds.len() {
+            //info!("{:?}",m.untypeds[i]);
+            //total_mem += m.untypeds[i].free_bytes;
+        //}
+        //info!("total_mem:{}",total_mem);
         //info!("{:?}",m.untypeds);
         m
     }
@@ -267,9 +275,8 @@ impl MemoryManagerInterface for MemoryManager {
 
         for od in &bundle.objs {
             if od.type_ == seL4_SmallPageObject {
-                //info!("ut_index:{}",ut_index);
                 self.current_memory_size += self.untypeds[ut_index+1].free_bytes;
-                if self.untypeds[ut_index].free_bytes > MAX_MEMORY_SIZE {
+                if self.untypeds[ut_index+1].free_bytes > MAX_MEMORY_SIZE {
                     let num = self.untypeds[ut_index+1].free_bytes / MAX_MEMORY_SIZE;
                     let ut_4m = ObjDescBundle::new(
                         18 ,
@@ -308,7 +315,6 @@ impl MemoryManagerInterface for MemoryManager {
                             self.requested_objs += 1024;
                         };
                     }
-                    //self.frame_base_slot += num + num * 1024;
                     self.frame_base_slot += num;
                     self.recv_frame_base_slot += num * 1024;
                 } else {
@@ -327,7 +333,7 @@ impl MemoryManagerInterface for MemoryManager {
                         self.requested_objs += num;
                     };
                     self.recv_frame_base_slot += num;
-                    }else {
+                    } else {
                         break;
                     }
                 }

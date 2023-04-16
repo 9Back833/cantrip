@@ -107,25 +107,18 @@ fn obj_alloc_command(
 
     //let before_stats = cantrip_memory_stats().expect("before stats");
     //mstats(output, &before_stats)?;
-    unsafe {
-        const ARRAY_SIZE: usize = 10;
-        const TEST_TIMES: usize = 2000;
-        //let a:u32 = cantrip_timer_readtime();
-        let mut seed = rand_pcg::Pcg32::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
 
-        // let frame_num_arr = [10, 12, 14, 16, 18, 20, 30, 40, 50, 60, 70, 80, 90,
-        //                  100, 150, 200, 250, 500, 1000];
+    unsafe {
+        /*
+        let mut seed = rand_pcg::Pcg32::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
+        let frame_num_arr = [1,2,4];
         let mut mem_block_vec: Vec<MemBlock> = Vec::new();
-        // let mut total_frame_num = 0;
+        let mut total_frame_num = 0;
         for i in 1..=12000 {
-            let frame_num = 1;
-            //total_frame_num += frame_num;
-            //info!("total:{}",total_frame_num)
+            let frame_num = get_third_size_distribution(&mut seed,frame_num_arr);
             let time = get_time(&mut seed, 100);
             let bulk = FRAME_VTREE.new_cantrip_frame_alloc(frame_num);
             let mem_block = MemBlock::new(frame_num, i+time, bulk);
-            // let bulk1 = mem_block.get_bulk();
-            // info!("alloc_block:{:?}",mem_block);
             mem_block_vec.push(mem_block);
             mem_block_vec.sort_by(|a, b| b.free_time.cmp(&a.free_time));
             loop {
@@ -144,22 +137,15 @@ fn obj_alloc_command(
                 }
             }
         }
-    };
-        /*
-        //let a:u32 = cantrip_timer_readtime();
-        for _ in 0..1 {
-            let frame_bulk0 = FRAME_VTREE.new_cantrip_frame_alloc(1);
-            info!("frame_bundle:{:?}",frame_bulk0.frame_bundle);
-            let frame_bulk1 = FRAME_VTREE.new_cantrip_frame_alloc(2);
-            info!("frame_bundle:{:?}",frame_bulk1.frame_bundle);
-            FRAME_VTREE.new_cantrip_frame_free(frame_bulk0);
-            let frame_bulk2 = FRAME_VTREE.new_cantrip_frame_alloc(1);
-            info!("frame_bundle:{:?}",frame_bulk2.frame_bundle);
-            //let b:u32 = cantrip_timer_readtime();
-        }
-        //let b:u32 = cantrip_timer_readtime();
-        //info!("toatl_time:{}",b-a);
-    }
         */
-    Ok(writeln!(output, "All tests passed!")?)
+
+        let a:u32 = cantrip_timer_readtime();
+        for i in 0..1024 {
+            let bulk = FRAME_VTREE.new_cantrip_frame_alloc(1);
+            //let b:u32 = cantrip_timer_readtime();
+        };
+        let b:u32 = cantrip_timer_readtime();
+        info!("4k_4M_toatl_time:{}",b-a);
+    }
+        Ok(writeln!(output, "All tests passed!")?)
 }

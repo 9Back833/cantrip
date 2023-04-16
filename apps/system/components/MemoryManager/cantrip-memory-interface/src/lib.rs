@@ -824,8 +824,8 @@ impl Vtree {
                 //let mut sub_mask = 0;
                 for i in 0..top_num {
                     let temp = 1 <<(i);
-                    for i in 0..temp {
-                        top_mask |= 1 << (63 - (left_index * temp + i));
+                    for u in 0..temp {
+                        top_mask |= 1 << (63 - (left_index * temp + u));
                     }
                 }
                 bitmap[0] |= top_mask;
@@ -922,8 +922,8 @@ impl Vtree {
             let mut sub_parents_mask = 0;
             for i in 0..sub_child_num {
                 let temp = 1 << i;
-                for i in 0..temp {
-                    sub_child_mask |= 1 << (63 - (sub * temp + i))
+                for u in 0..temp {
+                    sub_child_mask |= 1 << (63 - (sub * temp + u))
                 }
             }
             self.bitmap[sub_tree_index] ^= sub_child_mask;
@@ -986,8 +986,8 @@ impl Vtree {
             let mut top_child_mask = 0;
             for i in 0..top_child_num {
                 let child_temp = 1 << i;
-                for i in 0..child_temp {
-                    let sub_num = 63 - (top * child_temp + i);
+                for u in 0..child_temp {
+                    let sub_num = 63 - (top * child_temp + u);
                     if sub_num <= 31 {
                         let sub_index = 32 - sub_num;
                         self.bitmap[sub_index] = (1 << 63) -1;
@@ -1000,11 +1000,14 @@ impl Vtree {
             let mut top_parents_mask = 0;
             for i in 0..top_parents_num {
                 let parents = top >> (i+1);
-                //let temp = 1 << (63 - parents);
+                //info!("parents:{}",parents);
                 let top_buddy = find_buddy(top >> i);
+                //info!("top_buddy:{}",top_buddy);
                 let buddy_temp = 1 << (63 - top_buddy);
-                if (self.bitmap[0] & buddy_temp) > 0{
+                //info!("top_buddy:{}",buddy_temp);
+                if ((self.bitmap[0] & buddy_temp) > 0) && (self.bitmap[0] & (1 << (63 - (top >> i))) > 0) {
                     top_parents_mask |= 1 << (63 - parents);
+                    //info!("bitmap0:{}",self.bitmap[0]);
                 }
             }
             self.bitmap[0] |= top_parents_mask;
@@ -1037,7 +1040,7 @@ impl Vtree {
             for i in 0..sub_parents_num {
                 let parents = sub >> (i + 1);
                 let buddy_temp = 1 << (63 - sub_buddy);
-                if (self.bitmap[sub_tree_index] & buddy_temp) > 0 {
+                if ((self.bitmap[sub_tree_index] & buddy_temp) > 0) && (self.bitmap[sub_tree_index] & (1 << (63 - (top >> i))) > 0) {
                     sub_parents_mask |= 1 << (63 - parents);
                 }
             }
@@ -1050,7 +1053,7 @@ impl Vtree {
                 let parents = top >> (i+1);
                 let top_buddy = find_buddy(top >> i);
                 let buddy_temp = 1 << (63 - top_buddy);
-                if (self.bitmap[0] & buddy_temp) > 0 {
+                if ((self.bitmap[0] & buddy_temp) > 0) && (self.bitmap[0] & (1 << (63 - (top >> i))) > 0) {
                     top_parents_mask |= 1 << (63 - parents);
                 }
             }
@@ -1068,7 +1071,7 @@ impl Vtree {
                 let parents = top >> (i+1);
                 let top_buddy = find_buddy(top >> i);
                 let buddy_temp = 1 << (63 - top_buddy);
-                if (self.bitmap[0] & buddy_temp) > 0 {
+                if ((self.bitmap[0] & buddy_temp) > 0) && (self.bitmap[0] & (1 << (63 - (top >> i))) > 0) {
                     top_parents_mask |= 1 << (63 - parents);
                 }
             }
@@ -1206,7 +1209,9 @@ impl TreeVec {
             tree_node_option = self.find_request_vtree(request_mem);
         }
         let tree_node = tree_node_option.unwrap();
+        //info!("tree:{}",tree_node);
         let alloc_node = self.treevec[tree_node].find_alloc_node(request_mem).unwrap();
+        //info!("node:{:?}",alloc_node);
         let top = alloc_node.0;
         let sub = alloc_node.1;
         let mut frame_start_cptr = 0;
@@ -1222,9 +1227,9 @@ impl TreeVec {
             frame_start_cptr += self.treevec[tree_node].first_frame_cptr + sub_tree_node * 32 + start_index;
         }
         self.treevec[tree_node].chang_flag_one(request_mem);
+        //info!("treevec:{:?}",self.treevec[tree_node]);
         let frame_obj = vec![ObjDesc::new(seL4_SmallPageObject, num, frame_start_cptr)];
         unsafe {
-            //let frame_obj = vec![ObjDesc::new(seL4_SmallPageObject, num, 100)];
             let mut frame_bundle:ObjDescBundle = ObjDescBundle::new(MEMORY_RECV_CNODE, MEMORY_RECV_CNODE_DEPTH, frame_obj);
         //info!("bundle:{:?}",frame_bundle);
             frame_bundle.move_objects_to_toplevel();
@@ -1244,10 +1249,8 @@ impl TreeVec {
     }
 
     pub fn new_cantrip_mem_free(&mut self, mem: MemBlock) {
-        // self.treevec[frame.tree_node].chang_flag_zero(frame.alloc_node);
         unsafe {
             let frame_bundle = mem.bulk;
-            //info!("free_bundle:{:?}",frame_bundle);
             self.new_cantrip_frame_free(frame_bundle);
         }
     }
@@ -1294,7 +1297,7 @@ impl MemBlock {
 }
 
 const MAX_FRAME_NUM:usize = 1024;
-const NUM_OF_SIZE:usize = 19;
+const NUM_OF_SIZE:usize = 3;
 
 pub fn get_time(seed: &mut Pcg32, max_time:usize) -> usize {
     let mut time = ((seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(max_time)))) + 1;
@@ -1354,7 +1357,7 @@ pub fn get_second_size_distribution(seed: &mut Pcg32) -> usize {
     frame_num
 }
 
-pub fn get_third_size_distribution(seed: &mut Pcg32, arr: [usize; 22]) -> usize {
+pub fn get_third_size_distribution(seed: &mut Pcg32, arr: [usize; NUM_OF_SIZE]) -> usize {
     let mut index = (seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(NUM_OF_SIZE)));
     while index > (NUM_OF_SIZE - 1) {
         index = (seed.next_u32() as usize) % (1 << CalculateOf2::log2_2(CalculateOf2::next_power_of_2(NUM_OF_SIZE)));
