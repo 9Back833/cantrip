@@ -104,8 +104,41 @@ fn obj_alloc_command(
     output: &mut dyn io::Write,
     _builtin_cpio: &[u8],
 ) -> Result<(), CommandError> {
+
     unsafe {
-        /*
+        continuous_test();
+    };
+
+    Ok(writeln!(output, "All tests passed!")?)
+
+}
+
+pub fn unit_test() {
+    unsafe {
+    let bulk0 = FRAME_VTREE.new_cantrip_frame_alloc(1);
+    let bulk1 = FRAME_VTREE.new_cantrip_frame_alloc(4);
+    let bulk2 = FRAME_VTREE.new_cantrip_frame_alloc(1);
+    info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+    FRAME_VTREE.new_cantrip_frame_free(bulk0);
+    info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+    FRAME_VTREE.new_cantrip_frame_free(bulk2);
+    info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+    }
+}
+
+pub fn continuous_test() {
+    unsafe {
+        let a:u32 = cantrip_timer_readtime();
+        for i in 0..224{
+            let bulk = FRAME_VTREE.new_cantrip_frame_alloc(64);
+        };
+        let b:u32 = cantrip_timer_readtime();
+        info!("256k_28M_toatl_time:{}",b-a);
+    }
+}
+
+pub fn knuth_test() {
+    unsafe {
         let mut seed = rand_pcg::Pcg32::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
         let frame_num_arr = [1,2,4,8,16];
         let mut mem_block_vec: Vec<MemBlock> = Vec::new();
@@ -140,26 +173,5 @@ fn obj_alloc_command(
                 info!("tree:{},node:{},bitmap:{:x?}",i,u,FRAME_VTREE.treevec[i].bitmap[u]);
             }
         }
-        */
-        /*
-        let a:u32 = cantrip_timer_readtime();
-        for i in 0..16384 {
-            let bulk = FRAME_VTREE.new_cantrip_frame_alloc(1);
-            //let b:u32 = cantrip_timer_readtime();
-        };
-        let b:u32 = cantrip_timer_readtime();
-        info!("256k_28M_toatl_time:{}",b-a);
-        */
-       /*
-        let bulk0 = FRAME_VTREE.new_cantrip_frame_alloc(1);
-        let bulk1 = FRAME_VTREE.new_cantrip_frame_alloc(4);
-        let bulk2 = FRAME_VTREE.new_cantrip_frame_alloc(1);
-        //info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
-        FRAME_VTREE.new_cantrip_frame_free(bulk0);
-        info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
-        FRAME_VTREE.new_cantrip_frame_free(bulk2);
-        info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
-         */
     }
-        Ok(writeln!(output, "All tests passed!")?)
 }
