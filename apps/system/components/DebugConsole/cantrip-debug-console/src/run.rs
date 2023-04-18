@@ -50,7 +50,7 @@ static mut CAMKES: Camkes = Camkes::new("DebugConsole");
 
 #[no_mangle]
 pub unsafe extern "C" fn pre_init() {
-    const HEAP_SIZE: usize = 1024 * 1024;
+    const HEAP_SIZE: usize = 60 * 1024;
     static mut HEAP_MEMORY: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
     CAMKES.pre_init(INIT_LOG_LEVEL, &mut HEAP_MEMORY);
 }
