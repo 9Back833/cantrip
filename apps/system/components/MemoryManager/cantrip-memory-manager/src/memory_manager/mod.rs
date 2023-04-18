@@ -17,7 +17,6 @@ use smallvec::SmallVec;
 
 use sel4_sys::seL4_CNode_Delete;
 use sel4_sys::seL4_CNode_Revoke;
-//use sel4_sys::seL4_CNode_Move;
 use sel4_sys::seL4_CPtr;
 use sel4_sys::seL4_Error;
 use sel4_sys::seL4_Result;
@@ -169,15 +168,6 @@ impl MemoryManager {
         // Sort non-device slabs by descending amount of free space.
         m.untypeds
             .sort_unstable_by(|a, b| b.free_bytes.cmp(&a.free_bytes));
-       //let len = m.untypeds.len();
-       //info!("len:{}",len);
-      // let mut total_mem = 0;
-       //for i in 0..m.untypeds.len() {
-       //    info!("{:?}",m.untypeds[i].free_bytes);
-       //     total_mem += m.untypeds[i].free_bytes;
-       // }
-       // info!("total_mem:{}",total_mem);
-        //info!("{:?}",m.untypeds);
         m
     }
 
@@ -268,7 +258,6 @@ impl MemoryManager {
 impl MemoryManagerInterface for MemoryManager {
     fn alloc(&mut self, bundle: &ObjDescBundle) -> Result<(), MemoryError> {
         trace!("alloc {:?}", bundle);
-        //info!("cur_untyped:{}",self.cur_untyped);
         let first_ut = self.cur_untyped;
         let mut ut_index = first_ut;
 
@@ -343,7 +332,6 @@ impl MemoryManagerInterface for MemoryManager {
                     };
                 } else {
                     let num = self.untypeds[ut_index].free_bytes / MIN_MEMORY_SIZE;
-                    // TODO: ADD current memory
                     if num > 0 {
                     if let Err(e) = MemoryManager::retype_frame(
                         self.untypeds[ut_index].cptr,
@@ -395,10 +383,8 @@ impl MemoryManagerInterface for MemoryManager {
                 }
                 allocated_objs += od.retype_count();
                 allocated_bytes += od.size_bytes().unwrap();
-                //self.cur_untyped = -1;
             }
         }
-        //self.cur_untyped = ut_index;
 
         self.allocated_bytes += allocated_bytes;
         self.allocated_objs += allocated_objs;
