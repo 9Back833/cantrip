@@ -96,7 +96,6 @@ pub unsafe extern "C" fn memory_alloc(
     c_raw_data: *const u8,
 ) -> MemoryManagerError {
     let recv_path = CAMKES.get_current_recv_path();
-    //info!("path:{:?}",recv_path);
     // NB: make sure noone clobbers the setup done in memory__init
     CAMKES.assert_recv_path();
 

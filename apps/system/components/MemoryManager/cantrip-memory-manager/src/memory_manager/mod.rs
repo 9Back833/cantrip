@@ -67,16 +67,18 @@ struct UntypedSlab {
     pub _base_paddr: seL4_Word, // Physical address of slab start
     pub _last_paddr: seL4_Word, // Physical address of slab end
     pub cptr: seL4_CPtr,        // seL4 untyped object
+    pub remain_bytes: usize,    // Remain space in slab
 }
 
 impl UntypedSlab {
-    fn new(ut: &seL4_UntypedDesc, free_bytes: usize, cptr: seL4_CPtr) -> Self {
+    fn new(ut: &seL4_UntypedDesc, free_bytes: usize, cptr: seL4_CPtr, remain_bytes:usize) -> Self {
         UntypedSlab {
             _size_bits: ut.size_bits(),
             free_bytes,
             _base_paddr: ut.paddr,
             _last_paddr: ut.paddr + (1 << ut.size_bits()),
             cptr,
+            remain_bytes,
         }
     }
 }
@@ -145,7 +147,7 @@ impl MemoryManager {
             let slab_size = l2tob(ut.size_bits());
             if ut.is_device() {
                 m._device_untypeds
-                    .push(UntypedSlab::new(ut, slab_size, slots.start + ut_index));
+                    .push(UntypedSlab::new(ut, slab_size, slots.start + ut_index,0));
             } else {
                 if ut.is_tainted() {
                     revoke_cap(slots.start + ut_index).expect("revoke untyped");
@@ -157,7 +159,7 @@ impl MemoryManager {
 
                 // We only have the remainder available for allocations.
                 m.untypeds
-                    .push(UntypedSlab::new(ut, info.remainingBytes, slots.start + ut_index));
+                    .push(UntypedSlab::new(ut, info.remainingBytes, slots.start + ut_index, info.remainingBytes));
                 m.total_bytes += info.remainingBytes;
 
                 // Use overhead to track memory allocated out of our control.
@@ -167,14 +169,14 @@ impl MemoryManager {
         // Sort non-device slabs by descending amount of free space.
         m.untypeds
             .sort_unstable_by(|a, b| b.free_bytes.cmp(&a.free_bytes));
-       // let len = m.untypeds.len();
-        //info!("len:{}",len);
-        //let mut total_mem = 0;
-       // for i in 0..m.untypeds.len() {
-            //info!("{:?}",m.untypeds[i]);
-            //total_mem += m.untypeds[i].free_bytes;
-        //}
-        //info!("total_mem:{}",total_mem);
+       //let len = m.untypeds.len();
+       //info!("len:{}",len);
+      // let mut total_mem = 0;
+       //for i in 0..m.untypeds.len() {
+       //    info!("{:?}",m.untypeds[i].free_bytes);
+       //     total_mem += m.untypeds[i].free_bytes;
+       // }
+       // info!("total_mem:{}",total_mem);
         //info!("{:?}",m.untypeds);
         m
     }
@@ -275,37 +277,37 @@ impl MemoryManagerInterface for MemoryManager {
 
         for od in &bundle.objs {
             if od.type_ == seL4_SmallPageObject {
-                self.current_memory_size += self.untypeds[ut_index+1].free_bytes;
-                if self.untypeds[ut_index+1].free_bytes > MAX_MEMORY_SIZE {
-                    let num = self.untypeds[ut_index+1].free_bytes / MAX_MEMORY_SIZE;
-                    let ut_4m = ObjDescBundle::new(
-                        18 ,
-                        seL4_WordBits as u8,
-                        vec![ObjDesc::new(
-                            seL4_UntypedObject,
+                self.current_memory_size = self.untypeds[ut_index].free_bytes;
+                if self.untypeds[ut_index].free_bytes > MAX_MEMORY_SIZE {
+                    let num = self.untypeds[ut_index].free_bytes / MAX_MEMORY_SIZE;
+                    if self.untypeds[ut_index].remain_bytes == self.untypeds[ut_index].free_bytes {
+                        let ut_4m = ObjDescBundle::new(
+                            18 ,
+                            seL4_WordBits as u8,
+                            vec![ObjDesc::new(
+                                seL4_UntypedObject,
+                                22,
+                                self.frame_base_slot,
+                            )]
+                        );
+                        if let Err(e) = MemoryManager::retype_fix_untyped(
+                            self.untypeds[ut_index].cptr,
+                            &ut_4m.objs[0],
                             22,
-                            self.frame_base_slot,
-                        )]
-                    );
-                    if let Err(e) = MemoryManager::retype_fix_untyped(
-                        self.untypeds[ut_index+1].cptr,
-                        &ut_4m.objs[0],
-                        22,
-                        num,
-                        0,
-                    )
-                    {
-                        error!("Allocation untyped failed (retype returned {:?})", e);
-                        return Err(MemoryError::UnknownMemoryError);
-                    } else {
-                        self.requested_objs += num;
-                    };
-                    for i in 0..num {
+                            num,
+                            0,
+                        )
+                        {
+                            error!("Allocation untyped failed (retype returned {:?})", e);
+                            return Err(MemoryError::UnknownMemoryError);
+                        } else {
+                            self.requested_objs += num;
+                        };
                         if let Err(e) = MemoryManager::retype_frame(
-                            self.frame_base_slot + i,
+                            self.frame_base_slot,
                             bundle.cnode,
                             od,
-                            od.cptr + i*1024,
+                            od.cptr,
                             od.retype_count(),
                         )
                         {
@@ -314,14 +316,37 @@ impl MemoryManagerInterface for MemoryManager {
                         } else {
                             self.requested_objs += 1024;
                         };
+                        self.frame_base_slot += 1;
+                        self.recv_frame_base_slot += 1024;
+                        self.untypeds[ut_index].remain_bytes -= MAX_MEMORY_SIZE;
+                    } else {
+                        if let Err(e) = MemoryManager::retype_frame(
+                            self.frame_base_slot,
+                            bundle.cnode,
+                            od,
+                            od.cptr,
+                            od.retype_count(),
+                        )
+                        {
+                            error!("Allocation frame failed (retype returned {:?})", e);
+                            return Err(MemoryError::UnknownMemoryError);
+                        } else {
+                            self.requested_objs += 1024;
+                        };
+                        self.frame_base_slot += 1;
+                        self.recv_frame_base_slot += 1024;
+                        self.untypeds[ut_index].remain_bytes -= MAX_MEMORY_SIZE;
                     }
-                    self.frame_base_slot += num;
-                    self.recv_frame_base_slot += num * 1024;
+                    if self.untypeds[ut_index].remain_bytes < MAX_MEMORY_SIZE {
+                        ut_index = (ut_index + 1) % self.untypeds.len();
+                        self.cur_untyped = ut_index;
+                    };
                 } else {
-                    let num = self.untypeds[ut_index+1].free_bytes / MIN_MEMORY_SIZE;
+                    let num = self.untypeds[ut_index].free_bytes / MIN_MEMORY_SIZE;
+                    // TODO: ADD current memory
                     if num > 0 {
                     if let Err(e) = MemoryManager::retype_frame(
-                        self.untypeds[ut_index+1].cptr,
+                        self.untypeds[ut_index].cptr,
                         bundle.cnode,
                         od,
                         od.cptr,
@@ -331,20 +356,20 @@ impl MemoryManagerInterface for MemoryManager {
                         error!("Allocation frame failed (retype returned {:?})", e);
                     } else {
                         self.requested_objs += num;
+                        self.recv_frame_base_slot += num;
                     };
-                    self.recv_frame_base_slot += num;
                     } else {
-                        break;
+                        panic!("Untyped is less than 4k");
                     }
+                    ut_index = (ut_index + 1) % self.untypeds.len();
+                    self.cur_untyped = ut_index;
                 }
-                ut_index = (ut_index + 1) % self.untypeds.len();
-                self.cur_untyped = ut_index;
             } else {
                 while let Err(e) =
                 // NB: we don't allocate ASIDPool objects but if we did it
                 //   would fail because it needs to map to an UntypedObject
                     MemoryManager::retype_untyped(
-                        self.untypeds[ut_index].cptr,
+                        self.untypeds[31].cptr,
                         bundle.cnode,
                         od,
                     )
@@ -368,12 +393,12 @@ impl MemoryManagerInterface for MemoryManager {
                         return Err(MemoryError::AllocFailed);
                     }
                 }
-            allocated_objs += od.retype_count();
-            allocated_bytes += od.size_bytes().unwrap();
+                allocated_objs += od.retype_count();
+                allocated_bytes += od.size_bytes().unwrap();
+                //self.cur_untyped = -1;
             }
         }
-        self.cur_untyped = ut_index;
-        self.current_memory_size = self.untypeds[self.cur_untyped].free_bytes;
+        //self.cur_untyped = ut_index;
 
         self.allocated_bytes += allocated_bytes;
         self.allocated_objs += allocated_objs;
