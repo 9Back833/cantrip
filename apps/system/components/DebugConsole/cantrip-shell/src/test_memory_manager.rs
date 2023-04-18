@@ -104,27 +104,23 @@ fn obj_alloc_command(
     output: &mut dyn io::Write,
     _builtin_cpio: &[u8],
 ) -> Result<(), CommandError> {
-
-    //let before_stats = cantrip_memory_stats().expect("before stats");
-    //mstats(output, &before_stats)?;
-
     unsafe {
         /*
         let mut seed = rand_pcg::Pcg32::new(0xcafef00dd15ea5e5, 0xa02bdbf7bb3c0a7);
-        let frame_num_arr = [1,2,4];
+        let frame_num_arr = [1,2,4,8,16];
         let mut mem_block_vec: Vec<MemBlock> = Vec::new();
         let mut total_frame_num = 0;
-        for i in 1..=12000 {
+        for i in 1..=30000 {
             let frame_num = get_third_size_distribution(&mut seed,frame_num_arr);
-            let time = get_time(&mut seed, 100);
+            let time = get_time(&mut seed, 200);
             let bulk = FRAME_VTREE.new_cantrip_frame_alloc(frame_num);
             let mem_block = MemBlock::new(frame_num, i+time, bulk);
             mem_block_vec.push(mem_block);
             mem_block_vec.sort_by(|a, b| b.free_time.cmp(&a.free_time));
             loop {
                 match mem_block_vec.last() {
-                    Some(fxxk) => {
-                        if fxxk.free_time <= i {
+                    Some(buddy) => {
+                        if buddy.free_time <= i {
                             let block = mem_block_vec.pop().unwrap();
                             FRAME_VTREE.new_cantrip_mem_free(block);
                         } else {
@@ -137,15 +133,33 @@ fn obj_alloc_command(
                 }
             }
         }
+        let len = FRAME_VTREE.treevec.len();
+        info!("len:{}",len);
+        for i in 0..FRAME_VTREE.treevec.len() {
+            for u in 0..33 {
+                info!("tree:{},node:{},bitmap:{:x?}",i,u,FRAME_VTREE.treevec[i].bitmap[u]);
+            }
+        }
         */
-
+        /*
         let a:u32 = cantrip_timer_readtime();
-        for i in 0..1024 {
+        for i in 0..16384 {
             let bulk = FRAME_VTREE.new_cantrip_frame_alloc(1);
             //let b:u32 = cantrip_timer_readtime();
         };
         let b:u32 = cantrip_timer_readtime();
-        info!("4k_4M_toatl_time:{}",b-a);
+        info!("256k_28M_toatl_time:{}",b-a);
+        */
+       /*
+        let bulk0 = FRAME_VTREE.new_cantrip_frame_alloc(1);
+        let bulk1 = FRAME_VTREE.new_cantrip_frame_alloc(4);
+        let bulk2 = FRAME_VTREE.new_cantrip_frame_alloc(1);
+        //info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+        FRAME_VTREE.new_cantrip_frame_free(bulk0);
+        info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+        FRAME_VTREE.new_cantrip_frame_free(bulk2);
+        info!("bitmap:{:x?}",FRAME_VTREE.treevec[0].bitmap[1]);
+         */
     }
         Ok(writeln!(output, "All tests passed!")?)
 }

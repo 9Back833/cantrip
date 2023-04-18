@@ -33,5 +33,5 @@ component MemoryManager {
   // to hold the extra capabilties.
   attribute int untyped_memory = true;
 
-  attribute int cnode_headroom = 8192;
+ // attribute int cnode_headroom = 8192;
 }
